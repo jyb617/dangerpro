@@ -2,12 +2,51 @@ import onnxruntime as ort
 import cv2
 import toml
 import numpy as np
+import logging
+import traceback
+import os
 
+# 配置日志
+logger = logging.getLogger(__name__)
 
+logger.info("=" * 60)
+logger.info("初始化推理引擎模块")
+
+# 加载配置
 configs = toml.load('inferences/configs/config.toml')
+logger.info("✅ 配置文件加载成功")
 
-detection_session = ort.InferenceSession(configs['detection-model-path'], providers=configs['providers'])
-extraction_session = ort.InferenceSession(configs['extraction-model-path'], providers=configs['providers'])
+# 加载ONNX模型
+try:
+    detection_model_path = configs['detection-model-path']
+    extraction_model_path = configs['extraction-model-path']
+
+    logger.info(f"正在加载检测模型: {detection_model_path}")
+    if not os.path.exists(detection_model_path):
+        logger.error(f"❌ 检测模型文件不存在: {detection_model_path}")
+        raise FileNotFoundError(f"Detection model not found: {detection_model_path}")
+
+    detection_session = ort.InferenceSession(detection_model_path, providers=configs['providers'])
+    logger.info(f"✅ 检测模型加载成功")
+    logger.info(f"   - Providers: {detection_session.get_providers()}")
+
+    logger.info(f"正在加载特征提取模型: {extraction_model_path}")
+    if not os.path.exists(extraction_model_path):
+        logger.error(f"❌ 特征提取模型文件不存在: {extraction_model_path}")
+        raise FileNotFoundError(f"Extraction model not found: {extraction_model_path}")
+
+    extraction_session = ort.InferenceSession(extraction_model_path, providers=configs['providers'])
+    logger.info(f"✅ 特征提取模型加载成功")
+    logger.info(f"   - Providers: {extraction_session.get_providers()}")
+
+except Exception as e:
+    logger.error(f"❌ 模型加载失败: {e}")
+    logger.error(f"异常堆栈:\n{traceback.format_exc()}")
+    logger.error("请检查:")
+    logger.error("  1. 模型文件是否存在于 inferences/models/ 目录")
+    logger.error("  2. 模型文件是否是有效的ONNX格式")
+    logger.error("  3. 配置文件中的路径是否正确")
+    raise
 
 width = configs['segment-width']
 height = configs['segment-height']
@@ -22,6 +61,13 @@ std = configs['normalization-std']
 mean = configs['normalization-mean']
 
 smoothing_weight = np.ones(configs['smoothing-window']) / configs['smoothing-window']
+
+logger.info(f"推理参数配置:")
+logger.info(f"  - 视频段: {width}x{height}, 长度={length}帧")
+logger.info(f"  - 裁剪区域: [{x1}:{x2}, {y1}:{y2}]")
+logger.info(f"  - 归一化: mean={mean}, std={std}")
+logger.info(f"  - 平滑窗口: {configs['smoothing-window']}")
+logger.info("=" * 60)
 
 
 def normalize(inputs):
@@ -61,10 +107,19 @@ def segment_preprocess(frames):
 
 
 def extract_segment_features(segment):
-    extraction_outputs = extraction_session.run(['outputs'], {'inputs': segment})
-    extraction_outputs = extraction_outputs[0]
+    try:
+        logger.debug(f"   特征提取输入shape: {segment.shape}, dtype: {segment.dtype}")
+        extraction_outputs = extraction_session.run(['outputs'], {'inputs': segment})
+        extraction_outputs = extraction_outputs[0]
 
-    return np.squeeze(extraction_outputs, axis=0)
+        result = np.squeeze(extraction_outputs, axis=0)
+        logger.debug(f"   特征提取输出shape: {result.shape}")
+        return result
+    except Exception as e:
+        logger.error(f"❌ 特征提取失败: {e}")
+        logger.error(f"   输入shape: {segment.shape}, dtype: {segment.dtype}")
+        logger.error(f"异常堆栈:\n{traceback.format_exc()}")
+        raise
 
 
 def extract_video_features(video_path):
@@ -96,10 +151,19 @@ def sigmoid(inputs):
 
 
 def detection_by_features(features):
-    detection_outputs = detection_session.run(['outputs'], {'inputs': features})
-    detection_outputs = detection_outputs[0]
+    try:
+        logger.debug(f"   异常检测输入shape: {features.shape}, dtype: {features.dtype}")
+        detection_outputs = detection_session.run(['outputs'], {'inputs': features})
+        detection_outputs = detection_outputs[0]
 
-    return sigmoid(np.squeeze(detection_outputs, axis=0))
+        result = sigmoid(np.squeeze(detection_outputs, axis=0))
+        logger.debug(f"   异常检测输出shape: {result.shape}, 范围: [{result.min():.4f}, {result.max():.4f}]")
+        return result
+    except Exception as e:
+        logger.error(f"❌ 异常检测推理失败: {e}")
+        logger.error(f"   输入shape: {features.shape}, dtype: {features.dtype}")
+        logger.error(f"异常堆栈:\n{traceback.format_exc()}")
+        raise
 
 
 def score_smoothing(scores):
