@@ -59,13 +59,7 @@ class RealtimeInferenceSession:
 
         # 初始化视频捕获
         try:
-            logger.info(f"正在打开视频源: {source}")
-            self.capture = cv2.VideoCapture(source)
-
-            if not self.capture.isOpened():
-                logger.error(f"❌ 无法打开视频源: {source}")
-                logger.error("可能原因: 1) 摄像头不存在 2) 权限不足 3) 设备被占用 4) 文件路径错误")
-                raise RuntimeError(f"Failed to open video source: {source}")
+            self.capture = self._open_video_source(source)
 
             # 获取视频信息
             width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -119,6 +113,104 @@ class RealtimeInferenceSession:
 
     def __del__(self):
         self.release()
+
+    def _open_video_source(self, source):
+        """
+        智能打开视频源，支持多种后端
+        在 Windows 上优先使用 DirectShow
+        """
+        import platform
+        import sys
+
+        logger.info(f"正在打开视频源: {source}")
+        logger.info(f"操作系统: {platform.system()}")
+
+        # 尝试不同的方式打开摄像头
+        backends_to_try = []
+
+        # 判断是否为摄像头索引
+        is_camera_index = isinstance(source, int) or (isinstance(source, str) and source.isdigit())
+
+        if is_camera_index:
+            source_int = int(source) if isinstance(source, str) else source
+
+            # Windows 系统优先尝试 DirectShow
+            if platform.system() == 'Windows':
+                backends_to_try = [
+                    (cv2.CAP_DSHOW, "DirectShow"),
+                    (cv2.CAP_MSMF, "Microsoft Media Foundation"),
+                    (cv2.CAP_ANY, "Auto")
+                ]
+            else:
+                backends_to_try = [
+                    (cv2.CAP_ANY, "Auto"),
+                    (cv2.CAP_V4L2, "V4L2"),
+                ]
+
+            # 尝试不同的后端
+            for backend, backend_name in backends_to_try:
+                logger.info(f"  尝试使用 {backend_name} 后端...")
+
+                try:
+                    cap = cv2.VideoCapture(source_int, backend)
+
+                    if cap.isOpened():
+                        # 尝试读取一帧验证
+                        ret, frame = cap.read()
+                        if ret:
+                            logger.info(f"  ✅ 使用 {backend_name} 后端成功!")
+                            return cap
+                        else:
+                            logger.warning(f"  ⚠️ {backend_name} 打开成功但无法读取帧")
+                            cap.release()
+                    else:
+                        logger.warning(f"  ⚠️ {backend_name} 无法打开")
+
+                except Exception as e:
+                    logger.warning(f"  ⚠️ {backend_name} 出错: {e}")
+                    continue
+
+            # 所有后端都失败
+            logger.error(f"❌ 无法打开摄像头 {source}")
+            logger.error("可能原因:")
+            logger.error("  1. 摄像头不存在或未连接")
+            logger.error("  2. 摄像头权限不足 (Windows: 设置->隐私->相机)")
+            logger.error("  3. 摄像头被其他程序占用 (Zoom, Teams, 微信等)")
+            logger.error("  4. 摄像头驱动问题")
+            logger.error("")
+            logger.error("调试建议:")
+            logger.error(f"  1. 运行: python test_windows_camera.py")
+            logger.error("  2. 检查设备管理器中的摄像头状态")
+            logger.error("  3. 尝试使用 Windows 相机应用测试摄像头")
+            logger.error("  4. 尝试不同的摄像头索引 (0, 1, 2...)")
+
+            raise RuntimeError(f"Failed to open camera: {source}")
+
+        else:
+            # 文件路径或 RTSP 地址
+            logger.info(f"  检测到文件路径或网络地址: {source}")
+
+            cap = cv2.VideoCapture(source)
+
+            if not cap.isOpened():
+                logger.error(f"❌ 无法打开视频源: {source}")
+                logger.error("可能原因:")
+                logger.error("  1. 文件不存在或路径错误")
+                logger.error("  2. 视频格式不支持")
+                logger.error("  3. RTSP 地址错误或网络不通")
+                logger.error("  4. 缺少相应的解码器")
+
+                raise RuntimeError(f"Failed to open video source: {source}")
+
+            # 验证能否读取
+            ret, frame = cap.read()
+            if not ret:
+                logger.error(f"❌ 视频源打开成功但无法读取帧")
+                cap.release()
+                raise RuntimeError(f"Cannot read from video source: {source}")
+
+            logger.info(f"  ✅ 视频源打开成功!")
+            return cap
 
     def capture_task(self):
         try:
